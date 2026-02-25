@@ -25,7 +25,8 @@ RHReliableDatagram manager(rf95, SECONDARY_ADDR);
 bool waitingForDone = false;
 unsigned long triggerSentAt = 0;
 const unsigned long DONE_TIMEOUT_MS = 3000;  // how long to wait for DONE
-float samplesCollected = 0;
+int samplesCollected = 0;
+int SC = 0;
 
 // Screen Code
 const unsigned char *point;
@@ -339,7 +340,7 @@ void sendTrigger() {
 }
 
 
-float handleIncoming() {
+void handleIncoming(int samplesCollected) {
   uint8_t buf[RH_RF95_MAX_MESSAGE_LEN];
   uint8_t len = sizeof(buf);
   uint8_t from;
@@ -361,7 +362,7 @@ float handleIncoming() {
 
 
         // Optional: don’t spam too hard—print occasionally if you want
-        OLED_clear();
+        //OLED_clear();
         Serial.print("Depth: ");
         Serial.print(depth, 3);
         Serial.print(" m (RSSI ");
@@ -375,17 +376,17 @@ float handleIncoming() {
         if (depth < 50)
         {
         Serial.println("Go Up");
-        OLED_ShowString(6, 10, "Go Up");
+        OLED_ShowString(3, 40, "Go  Up ");
         }
         else if (depth > 150)
         {
         Serial.println("Go Down");
-        OLED_ShowString(6, 10, "Go Down");
+        OLED_ShowString(3,40, "Go Down");
         }
         else
         {
         Serial.println("Ready to Collect");
-        OLED_ShowString(6, 10, "Ready to Collect");
+        OLED_ShowString(3, 40, " Ready ");
         }
       }
     }
@@ -402,7 +403,7 @@ float handleIncoming() {
         Serial.print(counter);
         Serial.println(")");
         waitingForDone = false;
-        return counter;
+        samplesCollected++;
         //OLED_ShowString(0, 0, "Samples:");
         //OLED_ShowFloat(0, 70, (float)counter);
       } else {
@@ -431,7 +432,7 @@ void loop() {
 
 
   // 2) Process incoming depth + DONE
-  samplesCollected = handleIncoming();
+  handleIncoming(samplesCollected);
   OLED_ShowString(0, 0, "Samples Collected:");
   OLED_ShowNum(0, 110, samplesCollected);
 
