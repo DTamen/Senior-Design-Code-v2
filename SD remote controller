@@ -27,6 +27,8 @@ unsigned long triggerSentAt = 0;
 const unsigned long DONE_TIMEOUT_MS = 3000;  // how long to wait for DONE
 int samplesCollected = 0;
 int SC = 0;
+int startButton = 0;
+
 
 // Screen Code
 const unsigned char *point;
@@ -293,6 +295,7 @@ void hardResetRadio() {
 
 void setup() {
   Serial.begin(9600);
+  pinMode(startButton, INPUT);
   delay(1200);
   Serial.println("SECONDARY boot");
 
@@ -317,7 +320,8 @@ void setup() {
   delay(500);
   OLED_clear();
   
-  Serial.println("SECONDARY ready. Type 't' to trigger.");
+  Serial.println("SECONDARY ready. Push Button for Triggering.");
+  OLED_ShowString(5, 8, "Push Button to Start");
 }
 
 
@@ -326,11 +330,13 @@ void sendTrigger() {
 
 
   Serial.println("Sending trigger...");
+  OLED_ShowString(5, 9, "    Triggering    ");
   bool ok = manager.sendtoWait(trig, sizeof(trig), MAIN_ADDR);
 
 
   if (ok) {
     Serial.println("Trigger delivered, waiting for DONE...");
+    OLED_ShowString(5, 9, "     Triggered        ");
     waitingForDone = true;
     triggerSentAt = millis();
   } else {
@@ -414,6 +420,8 @@ void handleIncoming(int samplesCollected) {
     else if (type == 'E') { 
     if (waitingForDone) { Serial.println("************************************");
     Serial.println("TRIGGER REJECTED: Depth is out of bounds!");   Serial.println("************************************"); 
+    OLED_ShowString(5, 0, "     Triggered Failed       ");
+
     waitingForDone = false; // Frees the controller instantly! 
  } 
  }  
