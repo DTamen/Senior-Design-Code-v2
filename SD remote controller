@@ -2,6 +2,31 @@
 #include <RH_RF95.h>
 #include <RHReliableDatagram.h>
 
+
+// ---------- Pins ----------
+#define RFM95_CS   4
+#define RFM95_RST  2
+#define RFM95_INT  3
+
+
+// ---------- Radio ----------
+#define RF95_FREQ 915.0
+
+
+// ---------- Addresses ----------
+#define MAIN_ADDR      1
+#define SECONDARY_ADDR 2
+
+
+RH_RF95 rf95(RFM95_CS, RFM95_INT);
+RHReliableDatagram manager(rf95, SECONDARY_ADDR);
+
+
+bool waitingForDone = false;
+unsigned long triggerSentAt = 0;
+const unsigned long DONE_TIMEOUT_MS = 3000;  // how long to wait for DONE
+float samplesCollected = 0;
+
 // Screen Code
 const unsigned char *point;
 
@@ -177,13 +202,12 @@ OLED_send_data(0xff);
 }
 }
 }
-void OLED_init(void )
+void OLED_init(void)
 {
-unsigned char i;
-for(i=0;i<25;i++)
-{
-OLED_send_cmd(OLED_init_cmd[i]);
-}
+  for (unsigned char i = 0; i < sizeof(OLED_init_cmd); i++)
+  {
+    OLED_send_cmd(OLED_init_cmd[i]);
+  }
 }
 
 void Picture_display(const unsigned char *ptr_pic)
@@ -255,31 +279,6 @@ void OLED_ShowNum(unsigned char page, unsigned char column, int num) {
   OLED_ShowString(page, column, buffer); // Send the converted string to your screen
 }
 
-
-// ---------- Pins ----------
-#define RFM95_CS   4
-#define RFM95_RST  2
-#define RFM95_INT  3
-
-
-// ---------- Radio ----------
-#define RF95_FREQ 915.0
-
-
-// ---------- Addresses ----------
-#define MAIN_ADDR      1
-#define SECONDARY_ADDR 2
-
-
-RH_RF95 rf95(RFM95_CS, RFM95_INT);
-RHReliableDatagram manager(rf95, SECONDARY_ADDR);
-
-
-bool waitingForDone = false;
-unsigned long triggerSentAt = 0;
-const unsigned long DONE_TIMEOUT_MS = 3000;  // how long to wait for DONE
-
-
 void hardResetRadio() {
   pinMode(RFM95_RST, OUTPUT);
   digitalWrite(RFM95_RST, HIGH);
@@ -311,13 +310,13 @@ void setup() {
   rf95.setTxPower(23, false);
 
 
-  Serial.println("SECONDARY ready. Type 't' to trigger.");
-
   IO_init();
   OLED_init();
   OLED_full();
-  delay(1000);
+  delay(500);
   OLED_clear();
+  
+  Serial.println("SECONDARY ready. Type 't' to trigger.");
 }
 
 
@@ -340,7 +339,7 @@ void sendTrigger() {
 }
 
 
-void handleIncoming() {
+float handleIncoming() {
   uint8_t buf[RH_RF95_MAX_MESSAGE_LEN];
   uint8_t len = sizeof(buf);
   uint8_t from;
@@ -356,26 +355,22 @@ void handleIncoming() {
 
 
     if (type == 'D') {
-      if (len >= 1 + sizeof(int)) {
-        int depth;
-        memcpy(&depth, &buf[1], sizeof(int));
+      if (len >= 1 + sizeof(float)) {
+        float depth;
+        memcpy(&depth, &buf[1], sizeof(float));
 
 
         // Optional: don’t spam too hard—print occasionally if you want
+        OLED_clear();
         Serial.print("Depth: ");
         Serial.print(depth, 3);
         Serial.print(" m (RSSI ");
         Serial.print(rf95.lastRssi());
         Serial.println(" dBm)");
-    
-        OLED_clear(); // Ensure screen is blank
-  
-        // Print standard text
-        OLED_ShowString(4, 10, "Depth:"); 
-  
-        // Print the variable! 
-        // (Row 4, Column 10, passing in our variable name)
-        OLED_ShowNum(4, 100, depth);
+
+        //OLED_ShowString(4, 0, "Depth:");
+        //OLED_ShowFloat(4, 60, depth);
+
 
         if (depth < 50)
         {
@@ -407,14 +402,20 @@ void handleIncoming() {
         Serial.print(counter);
         Serial.println(")");
         waitingForDone = false;
-        OLED_ShowString(0, 10, "Samples Collected");
-        OLED_ShowNum(0, 100, counter);
-
+        return counter;
+        //OLED_ShowString(0, 0, "Samples:");
+        //OLED_ShowFloat(0, 70, (float)counter);
       } else {
         // DONE arrived unexpectedly (could happen if you reboot mid-protocol)
         Serial.println("Got DONE but wasn’t waiting.");
       }
     }
+    else if (type == 'E') { 
+    if (waitingForDone) { Serial.println("************************************");
+    Serial.println("TRIGGER REJECTED: Depth is out of bounds!");   Serial.println("************************************"); 
+    waitingForDone = false; // Frees the controller instantly! 
+ } 
+ }  
   }
 }
 
@@ -430,7 +431,9 @@ void loop() {
 
 
   // 2) Process incoming depth + DONE
-  handleIncoming(); 
+  samplesCollected = handleIncoming();
+  OLED_ShowString(0, 0, "Samples Collected:");
+  OLED_ShowNum(0, 110, samplesCollected);
 
   // 3) Timeout if DONE never arrives
   if (waitingForDone && (millis() - triggerSentAt > DONE_TIMEOUT_MS)) {
