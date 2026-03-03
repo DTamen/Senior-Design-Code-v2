@@ -27,7 +27,11 @@ unsigned long triggerSentAt = 0;
 const unsigned long DONE_TIMEOUT_MS = 3000;  // how long to wait for DONE
 int samplesCollected = 0;
 int SC = 0;
-int startButton = 0;
+#define START_BUTTON 7
+bool lastButtonState = HIGH;
+bool buttonPressed = false;
+unsigned long lastDebounceTime = 0;
+const unsigned long debounceDelay = 50;
 
 
 // Screen Code
@@ -295,7 +299,7 @@ void hardResetRadio() {
 
 void setup() {
   Serial.begin(9600);
-  pinMode(startButton, INPUT);
+ pinMode(START_BUTTON, INPUT_PULLUP);
   delay(1200);
   Serial.println("SECONDARY boot");
 
@@ -431,12 +435,24 @@ void handleIncoming(int samplesCollected) {
 
 void loop() {
   // 1) Read operator input on SECONDARY
-  if (Serial.available()) {
-    char c = (char)Serial.read();
-    if ((c == 't' || c == 'T') && !waitingForDone) {
-      sendTrigger();
-    }
+ int reading = digitalRead(START_BUTTON);
+
+if (reading != lastButtonState) {
+  lastDebounceTime = millis();
+}
+
+if ((millis() - lastDebounceTime) > debounceDelay) {
+  if (reading == LOW && !buttonPressed && !waitingForDone) {
+    buttonPressed = true;
+    sendTrigger();
   }
+
+  if (reading == HIGH) {
+    buttonPressed = false;
+  }
+}
+
+lastButtonState = reading;
 
 
   // 2) Process incoming depth + DONE
