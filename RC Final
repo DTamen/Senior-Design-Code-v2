@@ -347,7 +347,7 @@ void sendTrigger() {
 }
 
 
-void handleIncoming(int samplesCollected) {
+void handleIncoming(int &samplesCollected) {
   uint8_t buf[RH_RF95_MAX_MESSAGE_LEN];
   uint8_t len = sizeof(buf);
   uint8_t from;
@@ -397,27 +397,24 @@ void handleIncoming(int samplesCollected) {
         }
       }
     }
-    else if (type == 'K') { // DONE
+    
+    else if (type == 'K') {
       if (waitingForDone) {
         uint32_t counter = 0;
-        if (len >= 1 + sizeof(uint32_t)) {
-          memcpy(&counter, &buf[1], sizeof(uint32_t));
+        int receivedSamples = 0;
+
+        if (len >= 1 + sizeof(uint32_t) + sizeof(int)) {
+            memcpy(&counter, &buf[1], sizeof(uint32_t));
+            memcpy(&receivedSamples, &buf[1 + sizeof(uint32_t)], sizeof(int));
+            
+            samplesCollected = receivedSamples; 
+            Serial.print("New Sample Count: ");
+            Serial.println(samplesCollected);
         }
-
-
-        Serial.print("success");
-        Serial.print(" (actionCounter=");
-        Serial.print(counter);
-        Serial.println(")");
         waitingForDone = false;
-        samplesCollected++;
-        //OLED_ShowString(0, 0, "Samples:");
-        //OLED_ShowFloat(0, 70, (float)counter);
-      } else {
-        // DONE arrived unexpectedly (could happen if you reboot mid-protocol)
-        Serial.println("Got DONE but wasn’t waiting.");
       }
     }
+
     else if (type == 'E') { 
     if (waitingForDone) { Serial.println("************************************");
     Serial.println("TRIGGER REJECTED: Depth is out of bounds!");   Serial.println("************************************"); 
@@ -442,8 +439,15 @@ void loop() {
 
   // 2) Process incoming depth + DONE
   handleIncoming(samplesCollected);
-  OLED_ShowString(0, 0, "Samples Collected:");
-  OLED_ShowNum(0, 110, samplesCollected);
+  static int lastDisplayed = -1;
+
+
+  if (samplesCollected != lastDisplayed) {
+    OLED_ShowString(0, 110, "                        "); 
+    OLED_ShowString(0, 0, "Samples Collected:");
+    OLED_ShowNum(0, 110, samplesCollected);
+    lastDisplayed = samplesCollected;
+  }
 
   // 3) Timeout if DONE never arrives
   if (waitingForDone && (millis() - triggerSentAt > DONE_TIMEOUT_MS)) {
