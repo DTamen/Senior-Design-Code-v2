@@ -1,121 +1,216 @@
 #include <Stepper.h>
 #include <SoftwareSerial.h>
-#include <SPI.h>
-#include <RH_RF95.h>
-#include <RHReliableDatagram.h>
+
+
+// ─── Tunable Parameters ────────────────────────────────────────────────────
+const int TIME_SPENT_BOTTOM   = 20;      // seconds idle at bottom
+
+const unsigned long LOWER_TIME_MS = 3700;  // total time to lower (ms)
+const unsigned long RAISE_TIME_MS = 6900;  // total time to raise  (ms)
+
+const int MOTOR_MIN_SPEED = 80;   // PWM 0–255: starting/ending speed (slow)
+const int MOTOR_MAX_SPEED_DOWN = 160;  // lowering
+const int MOTOR_MAX_SPEED_UP   = 140; // raising
+
+// Ramp occupies this fraction of total travel on each end (0.0–0.5)
+const float RAMP_FRACTION = 0.25;
+// ──────────────────────────────────────────────────────────────────────────
 
 // Pins
-const int limitSwitchPin = 5;
-const int DCIN1 = A0, DCIN2 = A1;
-SoftwareSerial Serial1(9, 10); // Lidar
+const int limitSwitchPin = 8;
+const int DCIN1 = 5, DCIN2 = 6; // DCIN1=GRAY=a0  and DCIN2 =Orange=a1
+
+SoftwareSerial Serial1(9, 10);   // Lidar
 Stepper myStepper(200, A2, A3, A4, A5);
 
-#define RFM95_CS 4
-#define RFM95_RST 2
-#define RFM95_INT 3
-#define MAIN_ADDR 1
-#define SECONDARY_ADDR 2
-
-float dist;                
-int strength;          
-int check;            
-int i;
-int uart[9];                
-const int HEADER = 0x59; 
-
-RH_RF95 rf95(RFM95_CS, RFM95_INT);
-RHReliableDatagram manager(rf95, MAIN_ADDR);
+float dist = 0;
+int strength = 0;
+int check = 0;
+int i = 0;
+int uart[9];
+const int HEADER = 0x59;
 
 // States
-enum State { IDLE, LOWERING, CHECK_DEPTH, RAISING, ROTATING, FULL };
+enum State { IDLE, LOWERING, AT_BOTTOM, CHECK_DEPTH, RAISING, ROTATING, FULL };
 State currentState = IDLE;
 
 unsigned long stateTimer = 0;
 unsigned long lastTelemetry = 0;
+unsigned long bottomTimer = 0;
 
 int samples = 0;
 uint32_t actionCounter = 0;
-uint8_t controllerAddr = 0;
+
+// ─── Speed Profile ────────────────────────────────────────────────────────
+/**
+ * Returns a PWM speed (MOTOR_MIN_SPEED … MOTOR_MAX_SPEED) for a
+ * trapezoidal ramp given:
+ *   elapsed  – ms since the move started
+ *   total    – total ms for the full move
+ *
+ * Profile:
+ *   0% → RAMP_FRACTION*100%   : ramp UP   (slow → fast)
+ *   RAMP_FRACTION → (1-RAMP_FRACTION) : full speed
+ *   (1-RAMP_FRACTION) → 100% : ramp DOWN  (fast → slow)
+ */
+int getMotorSpeed(unsigned long elapsed, unsigned long total, int maxSpeed) {
+  float t = (float)elapsed / (float)total;
+  t = constrain(t, 0.0f, 1.0f);
+
+  float speedNorm;
+  if (t < RAMP_FRACTION) {
+    speedNorm = t / RAMP_FRACTION;
+  } else if (t < (1.0f - RAMP_FRACTION)) {
+    speedNorm = 1.0f;
+  } else {
+    speedNorm = (1.0f - t) / RAMP_FRACTION;
+  }
+
+  return (int)(MOTOR_MIN_SPEED + speedNorm * (maxSpeed - MOTOR_MIN_SPEED));
+}
+// ─── Motor Helpers ────────────────────────────────────────────────────────
+void motorStop() {
+  analogWrite(DCIN1, 0);
+  digitalWrite(DCIN2, LOW);
+}
+
+/** Lower the string (adjust direction to match your wiring) */
+void motorLower(int pwmSpeed) {
+  analogWrite(DCIN1, pwmSpeed);
+  digitalWrite(DCIN2, LOW);
+}
+
+/** Raise the string (opposite direction) */
+void motorRaise(int pwmSpeed) {
+  analogWrite(DCIN1, 255 - pwmSpeed);
+  digitalWrite(DCIN2, HIGH);
+}
+// ──────────────────────────────────────────────────────────────────────────
 
 void setup() {
   Serial.begin(9600);
   Serial1.begin(115200);
+
   myStepper.setSpeed(300);
+
   pinMode(limitSwitchPin, INPUT);
-  pinMode(DCIN1, OUTPUT); pinMode(DCIN2, OUTPUT);
-  
-  // Reset Radio
-  pinMode(RFM95_RST, OUTPUT); digitalWrite(RFM95_RST, HIGH); delay(10);
-  digitalWrite(RFM95_RST, LOW); delay(10); digitalWrite(RFM95_RST, HIGH);
-  
-  if (!manager.init()) while(1);
-  rf95.setFrequency(915.0);
-  rf95.setTxPower(23, false);
+  pinMode(DCIN1, OUTPUT);
+  pinMode(DCIN2, OUTPUT);
+
+  // Ensure DC motor is stopped at startup
+  //digitalWrite(DCIN1, HIGH);
+  //digitalWrite(DCIN2, HIGH);
+
+  motorStop();
+  Serial.println("System Ready");
 }
 
 void loop() {
   dist = measureHeight();
 
-  // Send Depth every 1 second
+  // Send depth every 500 ms over Serial
   if (millis() - lastTelemetry > 500) {
     sendDepth(dist);
     lastTelemetry = millis();
   }
 
-  // Check for Trigger
-  uint8_t buf[RH_RF95_MAX_MESSAGE_LEN];
-  uint8_t len = sizeof(buf);
-  uint8_t from;
-  if (manager.recvfromAckTimeout(buf, &len, 10, &from)) {
-    if (len >= 1 && buf[0] == 'T' && currentState == IDLE) {
-      if (dist >= 50 && dist <= 150) {
+  // Check for trigger from Serial
+  checkForTrigger();
+  runSequence();
+}
+
+void checkForTrigger() {
+  if (Serial.available()) {
+    char cmd = Serial.read();
+
+    if (cmd == 'T' && currentState == IDLE) {
+      if (dist <= 50 && dist <= 150) {
         actionCounter++;
-        controllerAddr = from;
         currentState = LOWERING;
         stateTimer = millis();
+        Serial.println("Trigger accepted");
+      } else {
+        Serial.println("Trigger rejected: depth out of range");
       }
     }
   }
-
-  runSequence();
 }
 
 void runSequence() {
   switch (currentState) {
-    case LOWERING:
-      digitalWrite(DCIN1, HIGH); digitalWrite(DCIN2, LOW);
-      if (millis() - stateTimer > 5000) { // 5s drop
-        digitalWrite(DCIN1, HIGH); digitalWrite(DCIN2, HIGH); // Stop
-        currentState = CHECK_DEPTH;
-      }
+
+    case IDLE:
+      // Do nothing
       break;
 
-    case CHECK_DEPTH:
-      // Stay here until depth is in range
-      if (dist >= 50 && dist <= 150) currentState = RAISING;
-      break;
+    case LOWERING: {
+      unsigned long elapsed = millis() - stateTimer;
 
-    case RAISING:
-      if (digitalRead(limitSwitchPin) == LOW) {
-        digitalWrite(DCIN1, LOW); digitalWrite(DCIN2, HIGH);
+      if (elapsed < LOWER_TIME_MS) {
+        int spd = getMotorSpeed(elapsed, LOWER_TIME_MS, MOTOR_MAX_SPEED_DOWN);
+        motorLower(spd);
+
+        // Optional: print speed for tuning
+        Serial.print("Lower PWM: "); Serial.println(spd);
       } else {
-        digitalWrite(DCIN1, HIGH); digitalWrite(DCIN2, HIGH); // Stop
-        currentState = ROTATING;
+        motorStop();
+        bottomTimer  = millis();
+        currentState = AT_BOTTOM;
+        Serial.println("Reached bottom, waiting...");
+      }
+      break;
+    }
+
+    case AT_BOTTOM:
+      if (millis() - bottomTimer >= (unsigned long)TIME_SPENT_BOTTOM * 1000UL) {
+        currentState = RAISING;
+        stateTimer   = millis();
+        Serial.println("Starting raise");
       }
       break;
 
-    case ROTATING:
-      int steps = (samples < 8) ? (20000/8) : (20000/16);
+    // case CHECK_DEPTH:
+    //   // Stay here until depth is in range
+    //   if (dist >= 50 && dist <= 150) {
+    //     currentState = RAISING;
+    //   }
+    //   break;
+
+    case RAISING: {
+      // Limit switch = HIGH means "not triggered" (adjust if your switch is NC)
+      if (digitalRead(limitSwitchPin) == LOW) {
+        unsigned long elapsed = millis() - stateTimer;
+        unsigned long clampedElapsed = min(elapsed, RAISE_TIME_MS);  // ← clamp to end of profile
+
+        int spd = getMotorSpeed(clampedElapsed, RAISE_TIME_MS, MOTOR_MAX_SPEED_UP);
+        motorRaise(spd);
+        Serial.print("Raise PWM: "); Serial.println(spd);
+      } else {
+        motorStop();
+        currentState = ROTATING;
+        Serial.println("Top reached");
+      }
+      break;
+    }
+
+    case ROTATING: {
+      delay(500);
+      int steps = (samples < 8) ? (20000 / 8) : (20000 / 16);
       myStepper.step(steps);
       stopStepper();
+
       samples++;
-      
-      // *** THE FIX: Send DONE only after all physical work is finished ***
+
+      // Send DONE only after physical work is finished
       sendDone();
-      
-      if (samples >= 8) currentState = FULL;
-      else currentState = IDLE;
+
+      if (samples >= 8) {
+        currentState = FULL;
+      } else {
+        currentState = IDLE;
+      }
       break;
+    }
 
     case FULL:
       Serial.println("Storage Full");
@@ -125,51 +220,48 @@ void runSequence() {
 
 // Helpers
 void stopStepper() {
-  digitalWrite(A2, LOW); digitalWrite(A3, LOW); 
-  digitalWrite(A4, LOW); digitalWrite(A5, LOW);
+  digitalWrite(A2, LOW);
+  digitalWrite(A3, LOW);
+  digitalWrite(A4, LOW);
+  digitalWrite(A5, LOW);
 }
 
 void sendDone() {
-  uint8_t pkt[1 + sizeof(uint32_t)];
-  pkt[0] = 'K';
-  memcpy(&pkt[1], &actionCounter, sizeof(uint32_t));
-  manager.sendtoWait(pkt, sizeof(pkt), controllerAddr);
+  Serial.print("K,");
+  Serial.println(actionCounter);
 }
 
 void sendDepth(float d) {
-  uint8_t pkt[1 + sizeof(float)];
-  pkt[0] = 'D';
-  memcpy(&pkt[1], &d, sizeof(float));
-  static uint8_t seq = 0;
-  manager.setHeaderId(++seq);
-  manager.sendto(pkt, sizeof(pkt), SECONDARY_ADDR);
+  Serial.print("D,");
+  Serial.println(d);
 }
 
-float measureHeight()
-{
-  if (Serial1.available())
-  {
-    if (Serial1.read() == HEADER)
-    {
+float measureHeight() {
+  if (Serial1.available()) {
+    if (Serial1.read() == HEADER) {
       uart[0] = HEADER;
-      if (Serial1.read() == HEADER)
-      {
+
+      if (Serial1.read() == HEADER) {
         uart[1] = HEADER;
-        for (i = 2; i < 9; i++)
-        {
+
+        for (i = 2; i < 9; i++) {
+          while (!Serial1.available()) {
+            // wait for complete packet
+          }
           uart[i] = Serial1.read();
         }
+
         check = uart[0] + uart[1] + uart[2] + uart[3] + uart[4] + uart[5] + uart[6] + uart[7];
-        if (uart[8] == (check & 0xff))
-        {
+
+        if (uart[8] == (check & 0xff)) {
           dist = uart[2] + uart[3] * 256;
+
           Serial.print("dist = ");
-          Serial.print(dist);
-          Serial.print('\n');
+          Serial.println(dist);
         }
       }
     }
   }
+
   return dist;
 }
-
