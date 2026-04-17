@@ -224,8 +224,8 @@ void runSequence() {
 
     case LOWERING: {
       // Lower until the target hall count is reached
-      digitalWrite(DCIN1, HIGH);
-      digitalWrite(DCIN2, LOW);
+      int currentSpeed = getMotorSpeed(millis() - stateTimer, LOWER_TIME_MS, MOTOR_MAX_SPEED_DOWN);
+      motorLower(currentSpeed);
 
       if (magnetCount >= targetLowerCounts) {
         digitalWrite(DCIN1, HIGH);
@@ -261,8 +261,10 @@ void runSequence() {
       // reset magnet count
       magnetCount = 0;
       if (digitalRead(limitSwitchPin) == LOW) {
-        digitalWrite(DCIN1, LOW);
-        digitalWrite(DCIN2, HIGH);
+        if (stateTimer == 0) stateTimer = millis(); // Add a check to set this once
+
+        int currentSpeed = getMotorSpeed(millis() - stateTimer, RAISE_TIME_MS, MOTOR_MAX_SPEED_UP);
+        motorRaise(currentSpeed);
       } else {
         digitalWrite(DCIN1, HIGH);
         digitalWrite(DCIN2, HIGH); // Stop
