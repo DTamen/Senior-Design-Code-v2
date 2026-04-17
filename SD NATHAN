@@ -233,6 +233,7 @@ void runSequence() {
         currentState = CHECK_DEPTH;
         Serial.println("Lowering target reached");
         Serial.println("Entered CHECK_DEPTH");
+        delay(20000);
       }
 
       // Safety timeout in case hall counts are missed
@@ -242,6 +243,7 @@ void runSequence() {
         currentState = CHECK_DEPTH;
         Serial.println("Lowering safety timeout reached");
         Serial.println("Entered CHECK_DEPTH");
+        delay(20000);
       }
       
       break;
