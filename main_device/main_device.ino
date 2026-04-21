@@ -5,7 +5,7 @@
 #include <RHReliableDatagram.h>
 
 // ─── Tunable Parameters ────────────────────────────────────────────────────
-const int TIME_SPENT_BOTTOM = 3;   // seconds idle at bottom after lowering
+const int TIME_SPENT_BOTTOM = 10;   // seconds idle at bottom after lowering
 
 // These are now only safety timeouts.
 // Ramp behavior is based on Hall counts, not seconds.
