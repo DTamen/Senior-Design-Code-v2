@@ -1,9 +1,37 @@
-/********************Jin Yichen**************************
-*****************0.96  4PIN IIC OLED FOR Arduino*************
-***** 3----3  SCK   ,  4----4  SDA   ,  
-***** BY:GU 
-********************************************************/
+#include <SPI.h>
+#include <RH_RF95.h>
+#include <RHReliableDatagram.h>
 
+
+// ---------- Pins ----------
+#define RFM95_CS   4
+#define RFM95_RST  2
+#define RFM95_INT  3
+
+
+// ---------- Radio ----------
+#define RF95_FREQ 915.0
+
+
+// ---------- Addresses ----------
+#define MAIN_ADDR      1
+#define SECONDARY_ADDR 2
+
+
+RH_RF95 rf95(RFM95_CS, RFM95_INT);
+RHReliableDatagram manager(rf95, SECONDARY_ADDR);
+
+
+bool waitingForDone = false;
+unsigned long triggerSentAt = 0;
+const unsigned long DONE_TIMEOUT_MS = 3000;  // how long to wait for DONE
+int samplesCollected = 0;
+int SC = 0;
+int startButton = 7;
+int state = 0;
+
+
+// Screen Code
 const unsigned char *point;
 
 const unsigned char OLED_init_cmd[25]=
@@ -178,13 +206,12 @@ OLED_send_data(0xff);
 }
 }
 }
-void OLED_init(void )
+void OLED_init(void)
 {
-unsigned char i;
-for(i=0;i<25;i++)
-{
-OLED_send_cmd(OLED_init_cmd[i]);
-}
+  for (unsigned char i = 0; i < sizeof(OLED_init_cmd); i++)
+  {
+    OLED_send_cmd(OLED_init_cmd[i]);
+  }
 }
 
 void Picture_display(const unsigned char *ptr_pic)
@@ -256,29 +283,175 @@ void OLED_ShowNum(unsigned char page, unsigned char column, int num) {
   OLED_ShowString(page, column, buffer); // Send the converted string to your screen
 }
 
-void  setup(){
-  IO_init();
-  OLED_init();
-  OLED_full();
-  delay(1000);
-  OLED_clear();
+void hardResetRadio() {
+  pinMode(RFM95_RST, OUTPUT);
+  digitalWrite(RFM95_RST, HIGH);
+  delay(10);
+  digitalWrite(RFM95_RST, LOW);
+  delay(10);
+  digitalWrite(RFM95_RST, HIGH);
+  delay(10);
 }
 
 
-// Create a global variable that we can change
-int myCount = 0;
+void setup() {
+  Serial.begin(9600);
+  pinMode(startButton, INPUT_PULLUP);
+  delay(1200);
+  Serial.println("SECONDARY boot");
+
+
+  hardResetRadio();
+
+
+  if (!manager.init()) {
+    Serial.println("LoRa init failed");
+    while (1);
+  }
+  if (!rf95.setFrequency(RF95_FREQ)) {
+    Serial.println("setFrequency failed");
+    while (1);
+  }
+  rf95.setTxPower(23, false);
+
+
+  IO_init();
+  OLED_init();
+  OLED_full();
+  delay(500);
+  OLED_clear();
+  
+  Serial.println("SECONDARY ready. Push Button for Triggering.");
+  OLED_ShowString(5, 8, "Push Button to Start");
+}
+
+
+void sendTrigger() {
+  uint8_t trig[1] = {'T'};
+
+
+  Serial.println("Sending trigger...");
+  OLED_ShowString(5, 9, "    Triggering    ");
+  bool ok = manager.sendtoWait(trig, sizeof(trig), MAIN_ADDR);
+
+
+  if (ok) {
+    Serial.println("Trigger delivered, waiting for DONE...");
+    OLED_ShowString(5, 9, "     Triggered        ");
+    waitingForDone = true;
+    triggerSentAt = millis();
+  } else {
+    Serial.println("Trigger FAILED (no ACK from main)");
+    waitingForDone = false;
+  }
+}
+
+
+void handleIncoming(int &samplesCollected) {
+  uint8_t buf[RH_RF95_MAX_MESSAGE_LEN];
+  uint8_t len = sizeof(buf);
+  uint8_t from;
+
+
+  // short timeout keeps loop responsive
+  if (manager.recvfromAckTimeout(buf, &len, 50, &from)) {
+   
+    if (len < 1) return;
+
+
+    char type = (char)buf[0];
+
+
+    if (type == 'D') {
+      if (len >= 1 + sizeof(float)) {
+        float depth;
+        memcpy(&depth, &buf[1], sizeof(float));
+
+
+        // Optional: don’t spam too hard—print occasionally if you want
+        //OLED_clear();
+        Serial.print("Depth: ");
+        Serial.print(depth, 3);
+        Serial.print(" m (RSSI ");
+        Serial.print(rf95.lastRssi());
+        Serial.println(" dBm)");
+
+        //OLED_ShowString(4, 0, "Depth:");
+        //OLED_ShowFloat(4, 60, depth);
+
+
+        if (depth < 50)
+        {
+        Serial.println("Go Up");
+        OLED_ShowString(3, 40, "Go  Up ");
+        }
+        else if (depth > 150)
+        {
+        Serial.println("Go Down");
+        OLED_ShowString(3,40, "Go Down");
+        }
+        else
+        {
+        Serial.println("Ready to Collect");
+        OLED_ShowString(3, 40, " Ready ");
+        }
+      }
+    }
+    
+    else if (type == 'K') {
+      if (waitingForDone) {
+        uint32_t counter = 0;
+        int receivedSamples = 0;
+
+        if (len >= 1 + sizeof(uint32_t) + sizeof(int)) {
+            memcpy(&counter, &buf[1], sizeof(uint32_t));
+            memcpy(&receivedSamples, &buf[1 + sizeof(uint32_t)], sizeof(int));
+            
+            samplesCollected = receivedSamples; 
+            Serial.print("New Sample Count: ");
+            Serial.println(samplesCollected);
+        }
+        waitingForDone = false;
+      }
+    }
+
+    else if (type == 'E') { 
+    if (waitingForDone) { Serial.println("************************************");
+    Serial.println("TRIGGER REJECTED: Depth is out of bounds!");   Serial.println("************************************"); 
+    OLED_ShowString(5, 0, "     Triggered Failed       ");
+
+    waitingForDone = false; // Frees the controller instantly! 
+ } 
+ }  
+  }
+}
+
 
 void loop() {
-  OLED_clear(); // Ensure screen is blank
-  
-  // Print standard text
-  OLED_ShowString(2, 10, "Current Value:"); 
-  
-  // Print the variable! 
-  // (Row 4, Column 10, passing in our variable name)
-  OLED_ShowNum(4, 10, myCount);
-  
-  // Update the variable and wait 1 second
-  myCount++; 
-  delay(1000); 
+  // 1) Read operator input on SECONDARY
+  state = digitalRead(startButton);
+  if(state == 1)
+  {
+  sendTrigger();
+  }
+
+
+
+  // 2) Process incoming depth + DONE
+  handleIncoming(samplesCollected);
+  static int lastDisplayed = -1;
+
+
+  if (samplesCollected != lastDisplayed) {
+    OLED_ShowString(0, 110, "                        "); 
+    OLED_ShowString(0, 0, "Samples Collected:");
+    OLED_ShowNum(0, 110, samplesCollected);
+    lastDisplayed = samplesCollected;
+  }
+
+  // 3) Timeout if DONE never arrives
+  if (waitingForDone && (millis() - triggerSentAt > DONE_TIMEOUT_MS)) {
+    Serial.println("Timed out waiting for DONE.");
+    waitingForDone = false;
+  }
 }
