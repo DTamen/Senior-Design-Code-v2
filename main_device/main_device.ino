@@ -5,7 +5,7 @@
 #include <RHReliableDatagram.h>
 
 // ─── Tunable Parameters ────────────────────────────────────────────────────
-const int TIME_SPENT_BOTTOM = 10;   // seconds idle at bottom after lowering
+const int TIME_SPENT_BOTTOM = 5;   // seconds idle at bottom after lowering
 
 // These are now only safety timeouts.
 // Ramp behavior is based on Hall counts, not seconds.
@@ -14,7 +14,7 @@ const unsigned long RAISE_TIME_MS = 20000;
 
 const int MOTOR_MIN_SPEED = 100;           // PWM 0–255: starting/ending speed
 const int MOTOR_MAX_SPEED_DOWN = 160;     // lowering max PWM
-const int MOTOR_MAX_SPEED_UP   = 140;     // raising max PWM
+const int MOTOR_MAX_SPEED_UP   = 160;     // raising max PWM
 
 const float RAMP_FRACTION = 0.25;         // 25% ramp up, 50% full, 25% ramp down
 
@@ -164,10 +164,9 @@ void updateMagnetCount(bool enableCounting) {
     return;
   }
 
-  // Count one rotation mark on falling edge
   if (lastHallState == HIGH && currentHallState == LOW) {
     magnetCount++;
-    Serial.print(F("Magnet count: "));
+    Serial.print(F("MagnetCount: "));
     Serial.println(magnetCount);
   }
 
@@ -200,6 +199,27 @@ unsigned long computeTargetLowerCounts(float measuredDepthCm) {
   Serial.println(result);
 
   return result;
+}
+
+// helper print function to stop flooding serial monitor with excessive prints
+void printMotorStatus(long currentCount, long targetCount, int pwm, bool homeReached, bool raising) {
+  static unsigned long lastPrint = 0;
+
+  if (millis() - lastPrint >= 200) {
+    if (raising){
+      Serial.print(F("RAISING | count: "));
+    } else {
+      Serial.print(F("LOWERING | count: "));
+    }
+    Serial.print(currentCount);
+    Serial.print(F(" / "));
+    Serial.print(targetCount);
+    Serial.print(F(" | pwm: "));
+    Serial.print(pwm);
+    Serial.print(F(" | limit: "));
+    Serial.println(homeReached ? F("PRESSED") : F("NOT PRESSED"));
+    lastPrint = millis();
+  }
 }
 
 // ─── Setup ─────────────────────────────────────────────────────────────────
@@ -323,13 +343,7 @@ void runSequence() {
         MOTOR_MAX_SPEED_DOWN
       );
 
-      Serial.print(F("LOWERING | pwm/count/target: "));
-      Serial.print(currentPWM);
-      Serial.print(F(" / "));
-      Serial.print(magnetCount);
-      Serial.print(F(" / "));
-      Serial.println(targetLowerCounts);
-
+      printMotorStatus(magnetCount, targetLowerCounts, currentPWM, false, false);
       motorLower(currentPWM);
 
       if (magnetCount >= targetLowerCounts) {
@@ -337,7 +351,7 @@ void runSequence() {
 
         targetRaiseCounts = magnetCount;   // Raise approximately same number of rotations
         magnetCount = 0;
-        lastHallState = digitalRead(hallPin); 
+        lastHallState = digitalRead(hallPin);
 
         currentState = WAIT_AT_BOTTOM;
         bottomTimer = millis();
@@ -346,7 +360,8 @@ void runSequence() {
         Serial.print(F("Raise target Hall counts: "));
         Serial.println(targetRaiseCounts);
         Serial.println(F("STATE: LOWERING -> WAIT_AT_BOTTOM"));
-      } else if (millis() - stateTimer > LOWER_TIME_MS) {
+      } 
+      else if (millis() - stateTimer > LOWER_TIME_MS) {
         motorStop();
 
         targetRaiseCounts = magnetCount;
@@ -405,29 +420,15 @@ void runSequence() {
         MOTOR_MAX_SPEED_UP
       );
 
-      bool homeReached = digitalRead(limitSwitchPin) == LIMIT_PRESSED;
+      bool homeReached = (digitalRead(limitSwitchPin) == LIMIT_PRESSED);
 
-      Serial.print(F("RAISING | pwm/count/target/limit: "));
-      Serial.print(currentPWM);
-      Serial.print(F(" / "));
-      Serial.print(magnetCount);
-      Serial.print(F(" / "));
-      Serial.print(targetRaiseCounts);
-      Serial.print(F(" / "));
-      Serial.println(digitalRead(limitSwitchPin));
+      printMotorStatus(magnetCount, targetRaiseCounts, currentPWM, homeReached, true);
 
-      // if (!homeReached && magnetCount < targetRaiseCounts) if you want to rely on setting rotations at max height
       if (!homeReached) {
         motorRaise(currentPWM);
       } else {
         motorStop();
-        // this will never happen
-        if (homeReached) {
-          Serial.println(F("Home position reached by limit switch"));
-        } else {
-          Serial.println(F("Raise target count reached"));
-        }
-
+        Serial.println(F("Home position reached by limit switch"));
         currentState = ROTATING;
         Serial.println(F("STATE: RAISING -> ROTATING"));
       }
@@ -466,7 +467,7 @@ void runSequence() {
       Serial.print(F("Samples after: "));
       Serial.println(samples);
 
-      sendDone();
+      sendSampleIncrementIfChanged();
 
       if (samples >= 8) {
         currentState = FULL;
@@ -485,7 +486,7 @@ void runSequence() {
 
       if (!notifiedFull) {
         Serial.println(F("Storage Full - Notifying Controller"));
-        sendDone();
+        sendSampleIncrementIfChanged();
         notifiedFull = true;
       }
 
@@ -503,21 +504,29 @@ void stopStepper() {
   Serial.println(F("Stepper stopped"));
 }
 
-void sendDone() {
+void sendSampleIncrementIfChanged() {
+  static int lastSentSamples = -1;
+
+  // Only send when samples increases
+  if (samples <= lastSentSamples) return;
+
   uint16_t samplesToSend = (uint16_t)samples;
   uint8_t pkt[1 + sizeof(uint32_t) + sizeof(uint16_t)];
 
   pkt[0] = 'K';
-
   memcpy(&pkt[1], &actionCounter, sizeof(uint32_t));
   memcpy(&pkt[1 + sizeof(uint32_t)], &samplesToSend, sizeof(uint16_t));
 
-  manager.sendtoWait(pkt, sizeof(pkt), controllerAddr);
+  if (manager.sendtoWait(pkt, sizeof(pkt), controllerAddr)) {
+    Serial.print(F("Sent sample increment | action/samples: "));
+    Serial.print(actionCounter);
+    Serial.print(F(" / "));
+    Serial.println(samples);
 
-  Serial.print(F("Sent DONE | action/samples: "));
-  Serial.print(actionCounter);
-  Serial.print(F(" / "));
-  Serial.println(samples);
+    lastSentSamples = samples;
+  } else {
+    Serial.println(F("Failed to send sample increment"));
+  }
 }
 
 void sendDepth(float d) {
