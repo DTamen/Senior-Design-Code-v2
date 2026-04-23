@@ -5,7 +5,7 @@
 #include <RHReliableDatagram.h>
 
 // ─── Tunable Parameters ────────────────────────────────────────────────────
-const int TIME_SPENT_BOTTOM = 5;   // seconds idle at bottom after lowering
+const int TIME_SPENT_BOTTOM = 20;   // seconds idle at bottom after lowering
 
 // These are now only safety timeouts.
 // Ramp behavior is based on Hall counts, not seconds.
@@ -13,14 +13,14 @@ const unsigned long LOWER_TIME_MS = 20000;
 const unsigned long RAISE_TIME_MS = 20000;
 
 const int MOTOR_MIN_SPEED = 100;           // PWM 0–255: starting/ending speed
-const int MOTOR_MAX_SPEED_DOWN = 160;     // lowering max PWM
-const int MOTOR_MAX_SPEED_UP   = 160;     // raising max PWM
+const int MOTOR_MAX_SPEED_DOWN = 190;     // lowering max PWM
+const int MOTOR_MAX_SPEED_UP   = 210;     // raising max PWM
 
 const float RAMP_FRACTION = 0.25;         // 25% ramp up, 50% full, 25% ramp down
 
 // Lowering parameters in cm
 const float SPOOL_CIRCUMFERENCE_CM = 5.65;
-const float EXTRA_LOWER_OFFSET_CM  = 5.0;
+const float EXTRA_LOWER_OFFSET_CM  = 0;
 const int   HALL_COUNTS_PER_REV    = 1;
 
 // Stepper/carousel values
@@ -286,7 +286,7 @@ void loop() {
       Serial.print(F("Current depth: "));
       Serial.println(dist);
 
-      if (dist >= 50 && dist <= 150) {
+      if (dist >= 50 && dist <= 180) {
         actionCounter++;
         controllerAddr = from;
 
@@ -393,7 +393,7 @@ void runSequence() {
     case CHECK_DEPTH:
       // If you only want to raise when the measured depth is valid, keep this.
       // Otherwise, you can remove the if statement and always enter RAISING.
-      if (dist >= 50 && dist <= 150) {
+      if (dist >= 50 && dist <= 180) {
         magnetCount = 0;
         lastHallState = digitalRead(hallPin);
 
