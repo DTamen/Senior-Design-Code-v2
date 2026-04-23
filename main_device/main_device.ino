@@ -286,7 +286,7 @@ void loop() {
       Serial.print(F("Current depth: "));
       Serial.println(dist);
 
-      if (dist >= 50 && dist <= 150) {
+      if (dist >= 50 && dist <= 180) {
         actionCounter++;
         controllerAddr = from;
 
@@ -393,7 +393,7 @@ void runSequence() {
     case CHECK_DEPTH:
       // If you only want to raise when the measured depth is valid, keep this.
       // Otherwise, you can remove the if statement and always enter RAISING.
-      if (dist >= 50 && dist <= 150) {
+      if (dist >= 50 && dist <= 180) {
         magnetCount = 0;
         lastHallState = digitalRead(hallPin);
 
