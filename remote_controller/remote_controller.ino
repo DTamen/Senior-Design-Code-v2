@@ -364,7 +364,7 @@ void handleIncoming(int &samplesCollected) {
           Serial.println(F("Go Up"));
           OLED_ShowString(3, 40, "Go  Up ");
         }
-        else if (depth > 180)
+        else if (depth > 1800)
         {
           Serial.println(F("Go Down"));
           OLED_ShowString(3,40, "Go Down");
